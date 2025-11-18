@@ -1,0 +1,14 @@
+langgraph
+langsmith
+langchain
+langchain_groq
+langchain_openai
+langchain_community
+python-dotenv
+astrapy
+cassio
+tiktoken
+langchainhub
+chromadb
+langchain_huggingface
+wikipedia
