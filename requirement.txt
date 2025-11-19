@@ -12,3 +12,5 @@ langchainhub
 chromadb
 langchain_huggingface
 wikipedia
+streamlit
+sentence-transformers

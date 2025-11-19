@@ -1,149 +1,217 @@
-import cassio
-from dotenv import load_dotenv
+import streamlit as st
 import os
-from langchain_classic.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import WebBaseLoader
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_classic.vectorstores.cassandra import Cassandra
-from langchain_classic.indexes.vectorstore import VectorStoreIndexWrapper
-from typing import Literal , List
-from langchain_core.prompts import ChatPromptTemplate
-from pydantic import BaseModel , Field
+import traceback
+
+# Set USER_AGENT
+os.environ['USER_AGENT'] = 'RAG-Chatbot/1.0'
+
+from Agents.Graph import RAGGraph
+from Services.VectorStoreServices import VectorStoreService
+from Config.settings import settings
 from langchain_openai import ChatOpenAI
-from langchain_community.utilities import WikipediaAPIWrapper
-from langchain_community.tools import WikipediaQueryRun
-from typing_extensions import TypedDict
-from langchain_classic.schema import Document
-from langgraph.graph import START , END , StateGraph
+from langchain_core.prompts import ChatPromptTemplate
 
-load_dotenv()
-appToken=os.environ["ASTRA_DB_APPLICATION_TOKEN"] = os.getenv("ASTRA_DB_APPLICATION_TOKEN")
-dbId = os.environ["ASTRA_DB_ID"] = os.getenv("ASTRA_DB_ID")
-os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
-os.environ["LANGSMITH_API_KEY"] = os.getenv("LANGSMITH_API_KEY")
-os.environ["HF_TOKEN"] = os.getenv("HF_TOKEN")
+# Enable debug mode
+DEBUG = False
 
-cassio.init(token= appToken , database_id=dbId)
+def log_debug(message):
+    """Print debug messages"""
+    if DEBUG:
+        st.sidebar.write(f"🔍 {message}")
+        print(f"DEBUG: {message}")
 
-urls = [
-    "https://lilianweng.github.io/posts/2023-06-23-agent/",
-    "https://lilianweng.github.io/posts/2023-03-15-prompt-engineering/",
-    "https://lilianweng.github.io/posts/2023-10-25-adv-attack-1lm/",
-]
-
-
-## load url
-docs = [WebBaseLoader(url).load() for url in urls]
-docList = [item for sublist in docs for item in sublist]
-textSplitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(chunk_size = 500 , chunk_overlap = 0)
-splitDocs= textSplitter.split_documents(docList)
-
-
-
-embeddings = HuggingFaceEmbeddings(model_name = "all-MiniLM-L6-v2")
-
-
-
-astraVectorStore = Cassandra(embedding= embeddings, table_name= "Chatbot with VectorDb" , session=None , keyspace=None )
-
-astraVectorStore.add_documents(splitDocs)
-
-astraVectorStoreIndex = VectorStoreIndexWrapper(vectorstore=astraVectorStore)
-
-retriever = astraVectorStore.as_retriever()
-
-
-##Data model
-class RouteQuery(BaseModel):
-    """
-    Route the user query to the most relevant datasource
-    """
-
-    dataSource : Literal["vectorStore" ,"WikiSearch" ] = Field(
-        ...,
-        description="Given a user question choose to route it to wikipedia or vectorstore.",
-    )
-llm = ChatOpenAI(model="gpt-5.1-2025-11-13")
-
-structuredLlmRouter =  llm.with_structured_output(RouteQuery)
-
-# Prompt
-
-system = """You are an expert at routing a user question to a vectorstore or wikipedia.
-
-The vectorstore contains documents related to agents, prompt engineering, and adversarial attacks.
-
-Use the vectorstore for questions on these topics. Otherwise, use wiki-search."""
-
-routePrompt = ChatPromptTemplate.from_messages(
-
-    [
-
-    ("system", system),
-
-    ("human", "{question}"),
-
-    ]
-
+# Page config
+st.set_page_config(
+    page_title="RAG Chatbot",
+    page_icon="🤖",
+    layout="wide"
 )
 
-questionRouter = routePrompt| structuredLlmRouter
+# Initialize session state
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
+if "vector_store" not in st.session_state:
+    st.session_state.vector_store = None
 
-wikiApiWrapper = WikipediaAPIWrapper(top_k_results=1 , doc_content_chars_max=200)
-wiki = WikipediaQueryRun(api_wrapper=wikiApiWrapper)
+if "graph" not in st.session_state:
+    st.session_state.graph = None
 
-class State(TypedDict):
-    question :str
-    generation : str
-    documents : List[str]
+if "initialized" not in st.session_state:
+    st.session_state.initialized = False
 
-def retrieve(state : State):
-    print("-----Retrieving-----")
-    questions = state["question"]
+# Initialize components
+@st.cache_resource
+def initialize_system():
+    """Initialize vector store and graph"""
+    try:
+        log_debug("Loading existing Chroma database...")
+        
+        # Check if database exists
+        if not os.path.exists(settings.CHROMA_PERSIST_DIR):
+            return None, None, "Database not found. Please run: python setup.py"
+        
+        # Initialize vector store (loads from disk)
+        vector_store = VectorStoreService()
+        log_debug("Vector store loaded from disk")
+        
+        # Initialize graph
+        graph = RAGGraph(vector_store)
+        log_debug("RAG graph initialized")
+        
+        return vector_store, graph, None
+        
+    except Exception as e:
+        error_msg = f"Initialization error: {str(e)}\n{traceback.format_exc()}"
+        return None, None, error_msg
 
-    documents = retriever.invoke(questions)
-    return {"documents" : documents , "questions" : questions}
+# Generate response
+def generate_response(question: str, documents):
+    """Generate response using LLM with retrieved documents"""
+    try:
+        log_debug(f"Generating response for: {question}")
+        
+        llm = ChatOpenAI(model=settings.LLM_MODEL, temperature=0.7)
+        
+        # Create context from documents
+        context = "\n\n".join([doc.page_content for doc in documents])
+        
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a helpful assistant. Answer the question based on the context provided. 
+            If the context doesn't contain relevant information, say so clearly.
+            
+            Context: {context}"""),
+            ("human", "{question}")
+        ])
+        
+        chain = prompt | llm
+        response = chain.invoke({"context": context, "question": question})
+        
+        return response.content
+        
+    except Exception as e:
+        return f"Error generating response: {str(e)}"
 
-def wikiSearch(state:State):
-    print("----Wikipedia----")
-    question = state["question"]
+# UI
+st.title("🤖 RAG Chatbot")
+st.markdown("Ask questions about AI agents, prompt engineering, and adversarial attacks!")
 
-    docs= wiki.invoke({"query": question})
-    wikiResults = docs
-    wikiResults = Document(page_content = wikiResults)
-    return {"documents" : wikiResults , "questions" : question}
-
-def RouteQuestion(state : State):
-    print("-----Route Question-----")
-    question = state["question"]
-    source = questionRouter.invoke({"question" : question})
-    if source.datasource == "WikiSearch":
-        print("---Routing to Wikipedia---")
-        return "WikiSearch"
-    elif source.datasource == "vectorStore":
-        print("---Routing to RAG---")
-        return "vectorStore"
+# Sidebar
+with st.sidebar:
+    st.header("About")
+    st.markdown("""
+    This chatbot uses:
+    - **Vector Store (Chroma)**: For questions about agents, prompt engineering, adversarial attacks
+    - **Wikipedia**: For general knowledge questions
     
+    The system automatically routes your question to the best source.
+    """)
+    
+    if st.button("Reset Conversation"):
+        st.session_state.messages = []
+        st.rerun()
+    
+    st.markdown("---")
+    
+    # Debug toggle
+    debug_enabled = st.checkbox("Show Debug Info", value=DEBUG)
+    if debug_enabled:
+        DEBUG = True
+        st.markdown("### Debug Info")
+        st.write(f"Messages: {len(st.session_state.messages)}")
+        st.write(f"Initialized: {st.session_state.initialized}")
+        st.write(f"DB exists: {os.path.exists(settings.CHROMA_PERSIST_DIR)}")
+    
+    st.markdown("---")
+    st.markdown("### Settings")
+    st.write(f"🤖 Model: {settings.LLM_MODEL}")
+    st.write(f"📊 Vector DB: Chroma")
+    st.write(f"📁 Location: {settings.CHROMA_PERSIST_DIR}")
 
-workflow = StateGraph(StateGraph)
+# Initialize system
+if not st.session_state.initialized:
+    with st.spinner("🔄 Loading vector database..."):
+        vector_store, graph, error = initialize_system()
+        
+        if error:
+            st.error(f"❌ {error}")
+            
+            if "Database not found" in error:
+                st.info("""
+                ### First Time Setup Required
+                
+                Run this command to initialize the database:
+                ```bash
+                python setup.py
+                ```
+                
+                This will:
+                1. Load documents from URLs
+                2. Split them into chunks
+                3. Create embeddings
+                4. Save to Chroma database
+                """)
+            st.stop()
+        else:
+            st.session_state.vector_store = vector_store
+            st.session_state.graph = graph
+            st.session_state.initialized = True
+            st.success("✅ System ready!")
 
-workflow.add_node("WikiSearch" , wikiSearch)
-workflow.add_node("retrieve" , retrieve )
+# Display chat messages
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+        if "source" in message:
+            st.caption(f"📚 Source: {message['source']}")
 
-workflow.add_conditional_edges(
-    START , 
-    RouteQuestion , 
-    {
-        "wikiSearch" : "wikiSearch", 
-        "vectorStore" : "retrieve"
-    },
+# Chat input
+if prompt := st.chat_input("Ask a question..."):
+    # Add user message
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    
+    with st.chat_message("user"):
+        st.markdown(prompt)
+    
+    # Generate response
+    with st.chat_message("assistant"):
+        with st.spinner("🤔 Thinking..."):
+            try:
+                # Get documents from graph
+                result = st.session_state.graph.invoke(prompt)
+                documents = result.get("documents", [])
+                
+                # Determine source
+                if len(documents) > 0:
+                    if hasattr(documents[0], 'metadata') and documents[0].metadata:
+                        source = "Vector Store"
+                    else:
+                        source = "Wikipedia"
+                else:
+                    source = "Unknown"
+                
+                # Generate response
+                response = generate_response(prompt, documents)
+                
+                st.markdown(response)
+                st.caption(f"📚 Source: {source}")
+                
+                # Add to message history
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": response,
+                    "source": source
+                })
+                
+            except Exception as e:
+                error_msg = f"Error: {str(e)}"
+                st.error(error_msg)
+                if DEBUG:
+                    st.code(traceback.format_exc())
 
+# Footer
+st.markdown("---")
+st.markdown(
+    "<div style='text-align: center; color: gray;'>Built with LangChain, LangGraph, Chroma and Streamlit</div>",
+    unsafe_allow_html=True
 )
-
-workflow.add_edge("retrieve" , END)
-workflow.add_edge("wikiSearch" , END)
-
-app = workflow.compile()
-
-
