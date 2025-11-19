@@ -26,7 +26,9 @@ st.set_page_config(
     page_icon="🤖",
     layout="wide"
 )
-
+st.secrets["OPENAI_API_KEY"]
+st.secrets["LANGSMITH_API_KEY"]
+st.secrets["HF_TOKEN"]
 # Initialize session state
 if "messages" not in st.session_state:
     st.session_state.messages = []
