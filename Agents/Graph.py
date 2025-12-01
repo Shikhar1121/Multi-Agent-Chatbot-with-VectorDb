@@ -34,6 +34,14 @@ class RAGGraph:
         wiki_results = Document(page_content=docs)
         return {"documents": [wiki_results], "question": question}
     
+    def _tavily_search(self, state: State):
+        """Search Tavily"""
+        print("-----Searching Tavily-----")
+        question = state["question"]
+        docs = self.retrieval_service.search_tavily(question)
+        tavily_results = Document(page_content=docs)
+        return {"documents": [tavily_results], "question": question}
+    
     def _route_question(self, state: State):
         """Route question to appropriate source"""
         print("-----Routing Question-----")
@@ -46,6 +54,9 @@ class RAGGraph:
         elif source == "vectorStore":
             print("---Routing to RAG---")
             return "vectorStore"
+        elif source == "tavilySearch":
+            print("---Routing to Tavily---")
+            return "tavilySearch"
     
     def _build_graph(self):
         """Build the LangGraph workflow"""
@@ -54,6 +65,7 @@ class RAGGraph:
         # Add nodes
         workflow.add_node("wikiSearch", self._wiki_search)
         workflow.add_node("retrieve", self._retrieve)
+        workflow.add_node("tavilySearch", self._tavily_search)
         
         # Add conditional edges
         workflow.add_conditional_edges(
@@ -61,13 +73,15 @@ class RAGGraph:
             self._route_question,
             {
                 "wikiSearch": "wikiSearch",
-                "vectorStore": "retrieve"
+                "vectorStore": "retrieve" , 
+                "tavilySearch": "tavilySearch"
             },
         )
         
         # Add edges to END
         workflow.add_edge("retrieve", END)
         workflow.add_edge("wikiSearch", END)
+        workflow.add_edge("tavilySearch", END)
         
         return workflow.compile()
     

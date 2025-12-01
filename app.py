@@ -3,7 +3,7 @@ import os
 import traceback
 
 # Set USER_AGENT
-os.environ['USER_AGENT'] = 'RAG-Chatbot/1.0'
+os.environ['USER_AGENT'] = 'RAG-Chatbot/1.1'
 
 from Agents.Graph import RAGGraph
 from Services.VectorStoreServices import VectorStoreService
@@ -26,9 +26,10 @@ st.set_page_config(
     page_icon="🤖",
     layout="wide"
 )
-st.secrets["OPENAI_API_KEY"]
-st.secrets["LANGSMITH_API_KEY"]
-st.secrets["HF_TOKEN"]
+##st.secrets["OPENAI_API_KEY"]
+##st.secrets["LANGSMITH_API_KEY"]
+##st.secrets["HF_TOKEN"]
+##st.secrets["TAVILY_API_KEY"]
 # Initialize session state
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -105,6 +106,7 @@ with st.sidebar:
     This chatbot uses:
     - **Vector Store (Chroma)**: For questions about agents, prompt engineering, adversarial attacks
     - **Wikipedia**: For general knowledge questions
+    - **Tavily**: For current events and news
     
     The system automatically routes your question to the best source.
     """)
@@ -187,8 +189,10 @@ if prompt := st.chat_input("Ask a question..."):
                 if len(documents) > 0:
                     if hasattr(documents[0], 'metadata') and documents[0].metadata:
                         source = "Vector Store"
-                    else:
+                    elif "wikipedia.org" in documents[0].page_content:
                         source = "Wikipedia"
+                    elif "tavily" in documents[0].page_content:
+                        source = "Tavily"
                 else:
                     source = "Unknown"
                 
